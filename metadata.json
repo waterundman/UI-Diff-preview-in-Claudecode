@@ -1,0 +1,5 @@
+{
+  "name": "OpenCode AI-Diff Preview",
+  "description": "An AI-powered frontend design plugin that provides interactive diff previews and resource suggestions.",
+  "requestFramePermissions": []
+}
