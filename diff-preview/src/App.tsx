@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Layout, 
   Code2, 
@@ -12,7 +12,6 @@ import {
   Settings, 
   Play, 
   ChevronRight, 
-  ChevronDown,
   Search,
   Plus,
   Image as ImageIcon,
@@ -22,11 +21,11 @@ import {
   Move,
   X,
   Check,
-  RefreshCw,
-  Copy
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateDesignSuggestion, AIDesignSuggestion } from './services/gemini';
+import { opencodeBridge } from './services/opencode';
 
 // --- Types ---
 interface Element {
@@ -178,11 +177,30 @@ export default function App() {
   const [showDiff, setShowDiff] = useState(false);
   const [prompt, setPrompt] = useState('Create a modern landing page hero section with a call to action and a glassmorphism card.');
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
-  
+
+  // OpenCode bridge connection state
+  const [opencodeConnected, setOpencodeConnected] = useState(false);
+  const [opencodeProject, setOpencodeProject] = useState<string | null>(null);
+  const [targetPath, setTargetPath] = useState('src/components/GeneratedComponent.tsx');
+
   // Simulated "Current Code" state
   const [currentElements, setCurrentElements] = useState<Element[]>([
     { id: '1', type: 'text', content: 'Hello World', x: 10, y: 10, width: 20, height: 5, style: 'text-2xl font-bold' }
   ]);
+
+  // Initialize OpenCode SDK bridge on mount
+  useEffect(() => {
+    opencodeBridge.connect().then((connected) => {
+      setOpencodeConnected(connected);
+      if (connected) {
+        opencodeBridge.getProject().then((project) => {
+          if (project && typeof project === 'object' && 'name' in project) {
+            setOpencodeProject((project as any).name as string);
+          }
+        });
+      }
+    });
+  }, []);
 
   const handleGenerate = async () => {
     setIsGenerating(true);
@@ -197,12 +215,47 @@ export default function App() {
     }
   };
 
-  const applySuggestion = () => {
-    if (suggestion) {
-      setCurrentElements(suggestion.elements);
-      setShowDiff(false);
-      setSuggestion(null);
+  const applySuggestion = async () => {
+    if (!suggestion) return;
+
+    const code = generateCode;
+    const sessionId = `diff-${Date.now()}`;
+
+    setCurrentElements(suggestion.elements);
+    setShowDiff(false);
+
+    if (opencodeConnected) {
+      try {
+        const written = await opencodeBridge.writeFile(targetPath, code);
+        if (written) {
+          await opencodeBridge.showToast(
+            `Design "${suggestion.title}" applied to ${targetPath}`,
+            'success'
+          );
+          await opencodeBridge.notifyAgent(
+            sessionId,
+            `User applied AI-generated design "${suggestion.title}" (${activeLanguage}). ` +
+            `Generated code written to ${targetPath}. Please review and refine.`
+          );
+          await opencodeBridge.suggestNext(
+            `Review the AI-generated design in ${targetPath}`
+          );
+        } else {
+          await opencodeBridge.showToast(
+            'Design changes applied locally. File write failed.',
+            'warning'
+          );
+        }
+      } catch (err) {
+        console.error('[OpenCode] Failed to write back:', err);
+        await opencodeBridge.showToast(
+          'Design changes applied locally',
+          'info'
+        );
+      }
     }
+
+    setSuggestion(null);
   };
 
   const updateElement = (id: string, updates: Partial<Element>) => {
@@ -220,40 +273,9 @@ export default function App() {
   const [activeLanguage, setActiveLanguage] = useState('React');
   const languages = ['React', 'Vue', 'Svelte', 'HTML/CSS'];
 
-  const [copied, setCopied] = useState(false);
-
   const selectedElement = suggestion?.elements.find(el => el.id === selectedElementId) || currentElements.find(el => el.id === selectedElementId);
 
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(generateCode());
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const renderLayerTree = (elements: Element[], parentId?: string, depth = 0) => {
-    const children = elements.filter(el => el.parentId === parentId);
-    if (children.length === 0) return null;
-
-    return (
-      <div className="flex flex-col w-full">
-        {children.map(el => (
-          <div key={el.id} className="flex flex-col w-full">
-            <div 
-              className={`flex items-center gap-2 px-2 py-1.5 text-xs cursor-pointer hover:bg-zinc-800/50 ${selectedElementId === el.id ? 'bg-blue-500/10 text-blue-400 border-l-2 border-blue-500' : 'text-zinc-400 border-l-2 border-transparent'}`}
-              style={{ paddingLeft: `${depth * 12 + 8}px` }}
-              onClick={() => setSelectedElementId(el.id)}
-            >
-              {elements.some(child => child.parentId === el.id) ? <ChevronDown size={12} /> : <div className="w-3" />}
-              <span className="truncate">{el.type} - {el.id.substring(0, 4)}</span>
-            </div>
-            {renderLayerTree(elements, el.id, depth + 1)}
-          </div>
-        ))}
-      </div>
-    );
-  };
-
-  const generateCode = () => {
+  const generateCode = useMemo(() => {
     const elementsToRender = showDiff && suggestion ? suggestion.elements : currentElements;
     
     const buildTree = (parentId?: string): string => {
@@ -262,14 +284,17 @@ export default function App() {
       
       return children.map(el => {
         const innerContent = buildTree(el.id) || el.content;
-        const styleStr = `left: '${Math.round(el.x)}%', top: '${Math.round(el.y)}%', width: '${Math.round(el.width)}%', height: '${Math.round(el.height)}%'`;
+        const styleStr = `position: absolute; left: ${Math.round(el.x)}%; top: ${Math.round(el.y)}%; width: ${Math.round(el.width)}%; height: ${Math.round(el.height)}%`;
         
         if (activeLanguage === 'React') {
-          return `      <div className="absolute ${el.style}" style={{ ${styleStr} }}>\n        ${innerContent}\n      </div>`;
+          const responsiveClass = el.style ? ` className="${el.style} lg:${el.style}"` : '';
+          return `      <div${responsiveClass} style={{ ${styleStr} }}>\n        ${innerContent}\n      </div>`;
         } else if (activeLanguage === 'Vue') {
-          return `    <div class="absolute ${el.style}" :style="{ ${styleStr} }">\n      ${innerContent}\n    </div>`;
+          const responsiveClass = el.style ? ` class="${el.style} lg:${el.style}"` : '';
+          return `    <div${responsiveClass} :style="{ ${styleStr} }">\n      ${innerContent}\n    </div>`;
         } else {
-          return `  <div class="absolute ${el.style}" style="left: ${Math.round(el.x)}%; top: ${Math.round(el.y)}%; width: ${Math.round(el.width)}%; height: ${Math.round(el.height)}%;">\n    ${innerContent}\n  </div>`;
+          const responsiveClass = el.style ? ` class="${el.style} lg:${el.style}"` : '';
+          return `  <div${responsiveClass} style="${styleStr}">\n    ${innerContent}\n  </div>`;
         }
       }).join('\n');
     };
@@ -277,13 +302,15 @@ export default function App() {
     const innerCode = buildTree(undefined);
 
     if (activeLanguage === 'React') {
-      return `export default function GeneratedComponent() {\n  return (\n    <div className="relative w-full h-full">\n${innerCode}\n    </div>\n  );\n}`;
+      return `import React from 'react';\n\nexport default function GeneratedComponent() {\n  return (\n    <div className="relative w-full h-full">\n${innerCode}\n    </div>\n  );\n}`;
     } else if (activeLanguage === 'Vue') {
-      return `<template>\n  <div class="relative w-full h-full">\n${innerCode}\n  </div>\n</template>`;
+      return `<template>\n  <div class="relative w-full h-full">\n${innerCode}\n  </div>\n</template>\n\n<script>\nexport default {\n  name: 'GeneratedComponent'\n};\n</script>`;
+    } else if (activeLanguage === 'Svelte') {
+      return `<script>\n  // Generated Svelte component\n</script>\n\n<div class="relative w-full h-full">\n${innerCode}\n</div>`;
     } else {
-      return `<div class="relative w-full h-full">\n${innerCode}\n</div>`;
+      return `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n  <title>Generated Component</title>\n</head>\n<body>\n  <div class="relative w-full h-full">\n${innerCode}\n  </div>\n</body>\n</html>`;
     }
-  };
+  }, [showDiff, suggestion, currentElements, activeLanguage]);
 
   const simulateAgentPush = () => {
     setSuggestion({
@@ -311,10 +338,10 @@ export default function App() {
       id: `new-${Date.now()}`,
       type: 'image',
       content: 'New Resource',
-      x: Math.max(0, Math.min(90, x)),
-      y: Math.max(0, Math.min(90, y)),
-      width: 15,
-      height: 15,
+      x: Math.max(0, Math.min(100, x)),
+      y: Math.max(0, Math.min(100, y)),
+      width: Math.min(15, 100 - x),
+      height: Math.min(15, 100 - y),
       style: ''
     };
 
@@ -398,6 +425,15 @@ export default function App() {
                             alt={res.name} 
                             className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity"
                             referrerPolicy="no-referrer"
+                            onError={(e) => {
+                              const target = e.currentTarget;
+                              target.style.display = 'none';
+                              target.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                              const fallback = document.createElement('span');
+                              fallback.className = 'text-[9px] text-zinc-500 text-center px-2';
+                              fallback.textContent = res.name;
+                              target.parentElement?.appendChild(fallback);
+                            }}
                           />
                           <div className="absolute bottom-0 left-0 right-0 p-1.5 bg-gradient-to-t from-black/80 to-transparent">
                             <span className="text-[9px] truncate block">{res.name}</span>
@@ -408,13 +444,6 @@ export default function App() {
                   </div>
                 </div>
               )}
-            </div>
-          </>
-        ) : activeTab === 'layers' ? (
-          <>
-            <PanelHeader title="Layers" icon={Layers} />
-            <div className="p-2 overflow-y-auto custom-scrollbar flex-1">
-              {renderLayerTree(showDiff && suggestion ? suggestion.elements : currentElements)}
             </div>
           </>
         ) : (
@@ -454,7 +483,33 @@ export default function App() {
               <span>100%</span>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            {/* OpenCode Connection Status */}
+            <div className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-medium border transition-colors ${
+              opencodeConnected
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                : 'bg-zinc-800/50 text-zinc-500 border-zinc-700'
+            }`}>
+              <span className={`relative flex h-1.5 w-1.5 ${opencodeConnected ? '' : 'hidden'}`}>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+              </span>
+              {opencodeConnected ? `OpenCode: ${opencodeProject || 'Connected'}` : 'OpenCode: Standalone'}
+            </div>
+
+            {opencodeConnected && (
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] text-zinc-600 uppercase tracking-wider">Target:</span>
+                <input
+                  type="text"
+                  value={targetPath}
+                  onChange={(e) => setTargetPath(e.target.value)}
+                  className="w-40 bg-zinc-800/50 border border-zinc-700 rounded px-2 py-0.5 text-[10px] text-zinc-300 focus:outline-none focus:border-blue-500 font-mono"
+                  placeholder="src/components/..."
+                />
+              </div>
+            )}
+
             <button className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-zinc-800 hover:bg-zinc-700 rounded-md border border-zinc-700 transition-colors">
               <Play size={12} fill="currentColor" />
               Preview
@@ -581,16 +636,7 @@ export default function App() {
                 <div className="text-zinc-700">Waiting for AI input...</div>
               )
             ) : (
-              <div className="relative h-full">
-                <button 
-                  onClick={handleCopyCode}
-                  className="absolute top-0 right-0 p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded border border-zinc-700 flex items-center gap-1 transition-colors"
-                >
-                  {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
-                  <span className="text-[10px]">{copied ? 'Copied!' : 'Copy'}</span>
-                </button>
-                <pre className="text-zinc-400 font-mono text-[11px] whitespace-pre-wrap">{generateCode()}</pre>
-              </div>
+              <pre className="text-zinc-400 font-mono text-[11px] whitespace-pre-wrap">{generateCode}</pre>
             )}
           </div>
         </div>

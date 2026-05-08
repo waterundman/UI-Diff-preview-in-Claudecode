@@ -41,14 +41,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["prompt"],
         },
       },
-      {
-        name: "get_current_layout",
-        description: "Retrieves the current layout elements from the preview window to analyze before suggesting changes.",
-        inputSchema: {
-          type: "object",
-          properties: {},
-        },
-      }
     ],
   };
 });
@@ -65,18 +57,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         },
       ],
     };
-  } else if (request.params.name === "get_current_layout") {
-    // In a real implementation, this would fetch the current state from the React app
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify([
-            { id: '1', type: 'text', content: 'Hello World', x: 10, y: 10, width: 20, height: 5, style: 'text-2xl font-bold' }
-          ]),
-        },
-      ],
-    };
   }
   throw new Error("Tool not found");
 });
@@ -87,5 +67,4 @@ async function main() {
   console.error("OpenCode AI-Diff MCP server running on stdio");
 }
 
-// main().catch(console.error);
-console.log("MCP Server definition loaded. Run with 'node mcp-server.js' in a real environment.");
+main().catch(console.error);
