@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "mcp": "tsx diff-preview/mcp-server.ts",
+    "mcp:preview": "tsx diff-preview/mcp-preview-server.ts",
     "clean": "node -e \"require('fs').rmSync('dist', {recursive:true, force:true})\"",
     "lint": "tsc --noEmit"
   },
